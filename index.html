@@ -148,6 +148,47 @@
         animation: shake 0.5s;
         color: var(--accent-wait);
       }
+
+      #stats-bar {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        gap: 4rem;
+        padding: 2rem;
+        padding-bottom: 3rem;
+        background: linear-gradient(to top, #050505 20%, transparent);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-secondary);
+        pointer-events: none;
+      }
+
+      .stat-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .stat-value {
+        color: var(--text-primary);
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+
+      .rating-text {
+        display: block;
+        font-size: 1.25rem;
+        font-weight: 800;
+        letter-spacing: 0.2em;
+        margin-top: 0.5rem;
+        text-transform: uppercase;
+      }
     </style>
   </head>
   <body>
@@ -158,6 +199,21 @@
         <h1 id="main-text">Reaction Timer</h1>
         <p id="sub-text" class="sub-text">Click anywhere to start</p>
         <div id="result-display" class="result-display">0 <span>ms</span></div>
+      </div>
+      
+      <div id="stats-bar">
+        <div class="stat-item">
+          <span>Best</span>
+          <span id="stat-best" class="stat-value">--</span>
+        </div>
+        <div class="stat-item">
+          <span>Average</span>
+          <span id="stat-avg" class="stat-value">--</span>
+        </div>
+        <div class="stat-item">
+          <span>Attempts</span>
+          <span id="stat-count" class="stat-value">0</span>
+        </div>
       </div>
     </div>
 
@@ -299,10 +355,85 @@
             setVisuals(COLORS.FAIL, 0.5);
             uiMainText.innerText = "Too Early!";
             uiMainText.classList.add("shake"); // CSS Shake
+            Audio.playFail(); // Play gentle donk
             uiSubText.innerText = "Click to reset";
             if (waiterTimeout) clearTimeout(waiterTimeout);
             break;
         }
+      }
+
+      // --- AUDIO SYSTEM ---
+      const Audio = {
+        ctx: null,
+        init: function() {
+            if (!this.ctx) {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (this.ctx.state === 'suspended') {
+                this.ctx.resume();
+            }
+        },
+        playSuccess: function() {
+            if (!this.ctx) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(1200, this.ctx.currentTime + 0.1);
+            
+            gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.5);
+            
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.5);
+        },
+        playFail: function() {
+            if (!this.ctx) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+            osc.frequency.linearRampToValueAtTime(100, this.ctx.currentTime + 0.3);
+            
+            gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.4);
+            
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.4);
+        }
+      };
+
+      // --- STATS LOGIC ---
+      let sessionStats = {
+        best: Infinity,
+        sum: 0,
+        count: 0
+      };
+
+      function getRating(ms) {
+        if (ms < 200) return { text: "GODLIKE", color: "#a55eea" }; 
+        if (ms < 230) return { text: "TURBO", color: "#0abde3" };   
+        if (ms < 280) return { text: "FAST", color: "#1dd1a1" };    
+        if (ms < 400) return { text: "AVERAGE", color: "#feca57" }; 
+        return { text: "SLOW", color: "#8395a7" };                  
+      }
+
+      function updateStats(ms) {
+        sessionStats.count++;
+        sessionStats.sum += ms;
+        if (ms < sessionStats.best) sessionStats.best = ms;
+
+        document.getElementById('stat-count').innerText = sessionStats.count;
+        document.getElementById('stat-avg').innerText = Math.floor(sessionStats.sum / sessionStats.count) + " ms";
+        document.getElementById('stat-best').innerText = sessionStats.best + " ms";
       }
 
       function setVisuals(colorHex, emissiveInt) {
@@ -332,7 +463,11 @@
             const endTime = performance.now();
             const reactionTime = Math.floor(endTime - startTime);
 
-            uiResult.innerHTML = `${reactionTime} <span>ms</span>`;
+            const rating = getRating(reactionTime);
+            updateStats(reactionTime);
+            Audio.playSuccess(); // Play gentle dink
+
+            uiResult.innerHTML = `${reactionTime} <span>ms</span><div class="rating-text" style="color: ${rating.color}">${rating.text}</div>`;
             uiResult.style.display = "block";
 
             updateState(STATES.RESULT);
@@ -346,9 +481,15 @@
       }
 
       // --- EVENT LISTENERS ---
-      window.addEventListener("mousedown", handleInput);
+      window.addEventListener("mousedown", () => {
+        Audio.init(); // Ensure audio context is ready on first interaction
+        handleInput();
+      });
       window.addEventListener("keydown", (e) => {
-        if (e.code === "Space") handleInput();
+        if (e.code === "Space") {
+            Audio.init();
+            handleInput();
+        }
       });
 
       window.addEventListener("resize", onWindowResize, false);
