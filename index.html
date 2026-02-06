@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Reaction Timer</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+      :root {
+        --bg-color: #050505;
+        --text-primary: #ffffff;
+        --text-secondary: #888888;
+        --accent-idle: #e0e0e0;
+        --accent-wait: #ff4757;
+        --accent-go: #2ed573;
+        --accent-result: #3742fa;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background-color: var(--bg-color);
+        color: var(--text-primary);
+        overflow: hidden;
+        width: 100vw;
+        height: 100vh;
+        font-family: "Inter", sans-serif;
+        user-select: none;
+        cursor: pointer; /* Implicit interaction hint */
+      }
+
+      #game-container {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+      }
+
+      #ui-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 2;
+        pointer-events: none; /* Let clicks pass through to body handler */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        transition: opacity 0.3s ease;
+      }
+
+      .ui-content {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        max-width: 600px;
+        padding: 2rem;
+      }
+
+      h1 {
+        font-weight: 800;
+        font-size: 4rem;
+        letter-spacing: -0.05em;
+        text-transform: uppercase;
+        text-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+      }
+
+      .sub-text {
+        font-weight: 400;
+        font-size: 1.25rem;
+        color: var(--text-secondary);
+        letter-spacing: 0.05em;
+      }
+
+      .result-display {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 5rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-top: 1rem;
+        display: none; /* Hidden by default */
+        text-shadow: 0 0 30px rgba(55, 66, 250, 0.4);
+      }
+
+      .result-display span {
+        font-size: 1.5rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+      }
+
+      /* Animation utilities */
+      @keyframes shake {
+        0% {
+          transform: translate(1px, 1px) rotate(0deg);
+        }
+        10% {
+          transform: translate(-1px, -2px) rotate(-1deg);
+        }
+        20% {
+          transform: translate(-3px, 0px) rotate(1deg);
+        }
+        30% {
+          transform: translate(3px, 2px) rotate(0deg);
+        }
+        40% {
+          transform: translate(1px, -1px) rotate(1deg);
+        }
+        50% {
+          transform: translate(-1px, 2px) rotate(-1deg);
+        }
+        60% {
+          transform: translate(-3px, 1px) rotate(0deg);
+        }
+        70% {
+          transform: translate(3px, 1px) rotate(-1deg);
+        }
+        80% {
+          transform: translate(-1px, -1px) rotate(1deg);
+        }
+        90% {
+          transform: translate(1px, 2px) rotate(0deg);
+        }
+        100% {
+          transform: translate(1px, -2px) rotate(-1deg);
+        }
+      }
+
+      .shake {
+        animation: shake 0.5s;
+        color: var(--accent-wait);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game-container"></div>
+
+    <div id="ui-layer">
+      <div class="ui-content">
+        <h1 id="main-text">Reaction Timer</h1>
+        <p id="sub-text" class="sub-text">Click anywhere to start</p>
+        <div id="result-display" class="result-display">0 <span>ms</span></div>
+      </div>
+    </div>
+
+    <script>
+      // --- CONFIGURATION ---
+      const COLORS = {
+        IDLE: 0xe0e0e0, // Ghost White/Silver
+        WAITING: 0xff4757, // Coral Red
+        STIMULUS: 0x2ed573, // Neon Green
+        RESULT: 0x3742fa, // Electric Blue
+        FAIL: 0xff4757, // Red (same as waiting, but context differs)
+      };
+
+      const ROTATION_SPEED = {
+        IDLE: 0.005,
+        WAITING: 0.08,
+        STIMULUS: 0.0, // Momentary freeze or slow
+        RESULT: 0.01,
+      };
+
+      // --- STATE MANAGEMENT ---
+      const STATES = {
+        IDLE: "IDLE",
+        WAITING: "WAITING",
+        STIMULUS: "STIMULUS",
+        RESULT: "RESULT",
+        FAIL: "FAIL",
+      };
+
+      let currentState = STATES.IDLE;
+      let startTime = 0;
+      let waiterTimeout = null;
+
+      // --- THREE.JS SETUP ---
+      const container = document.getElementById("game-container");
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x050505, 0.035); // Depth fog
+
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000,
+      );
+      camera.position.z = 5;
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      container.appendChild(renderer.domElement);
+
+      // --- OBJECTS ---
+      // Main Reactor Sphere (Icosahedron for geometry interest)
+      const geometry = new THREE.IcosahedronGeometry(1.8, 1); // Radius 1.8, Detail 1 (low poly look)
+      const material = new THREE.MeshStandardMaterial({
+        color: COLORS.IDLE,
+        roughness: 0.3,
+        metalness: 0.8,
+        wireframe: false,
+        flatShading: true, // Gives that low-poly faceted look
+        emissive: 0x000000,
+        emissiveIntensity: 0,
+      });
+      const reactor = new THREE.Mesh(geometry, material);
+      scene.add(reactor);
+
+      // Wireframe cage (outer shell for visual depth)
+      const frameGeo = new THREE.IcosahedronGeometry(2.2, 1);
+      const frameMat = new THREE.MeshBasicMaterial({
+        color: 0x333333,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.1,
+      });
+      const cage = new THREE.Mesh(frameGeo, frameMat);
+      scene.add(cage);
+
+      // --- LIGHTING ---
+      const ambientLight = new THREE.AmbientLight(0x404040, 2); // Soft white light
+      scene.add(ambientLight);
+
+      const pointLight = new THREE.PointLight(0xffffff, 1, 100);
+      pointLight.position.set(5, 5, 5);
+      scene.add(pointLight);
+
+      // Dynamic Backlight (Changes with state)
+      const backLight = new THREE.PointLight(COLORS.IDLE, 2, 20);
+      backLight.position.set(0, 0, -5);
+      scene.add(backLight);
+
+      // --- UI ELEMENTS ---
+      const uiMainText = document.getElementById("main-text");
+      const uiSubText = document.getElementById("sub-text");
+      const uiResult = document.getElementById("result-display");
+
+      // --- GAME LOGIC ---
+
+      function updateState(newState) {
+        currentState = newState;
+
+        switch (newState) {
+          case STATES.IDLE:
+            setVisuals(COLORS.IDLE, 0);
+            uiMainText.innerText = "Reaction Timer";
+            uiSubText.innerText = "Click anywhere to start";
+            uiResult.style.display = "none";
+            uiMainText.classList.remove("shake");
+            break;
+
+          case STATES.WAITING:
+            setVisuals(COLORS.WAITING, 0.2);
+            uiMainText.innerText = "Wait for Green...";
+            uiSubText.innerText = "Get ready";
+            uiResult.style.display = "none";
+            uiMainText.classList.remove("shake");
+
+            // Random delay between 2s and 5s
+            const delay = Math.random() * 3000 + 2000;
+            waiterTimeout = setTimeout(triggerStimulus, delay);
+            break;
+
+          case STATES.STIMULUS:
+            setVisuals(COLORS.STIMULUS, 1.0); // High emissive for "flash"
+            uiMainText.innerText = "CLICK!";
+            uiSubText.innerText = "Now!";
+            startTime = performance.now();
+            break;
+
+          case STATES.RESULT:
+            setVisuals(COLORS.RESULT, 0.5);
+            uiMainText.innerText = "Result";
+            uiSubText.innerText = "Click to try again";
+            break;
+
+          case STATES.FAIL:
+            setVisuals(COLORS.FAIL, 0.5);
+            uiMainText.innerText = "Too Early!";
+            uiMainText.classList.add("shake"); // CSS Shake
+            uiSubText.innerText = "Click to reset";
+            if (waiterTimeout) clearTimeout(waiterTimeout);
+            break;
+        }
+      }
+
+      function setVisuals(colorHex, emissiveInt) {
+        material.color.setHex(colorHex);
+        material.emissive.setHex(colorHex);
+        material.emissiveIntensity = emissiveInt;
+        backLight.color.setHex(colorHex);
+      }
+
+      function triggerStimulus() {
+        if (currentState === STATES.WAITING) {
+          updateState(STATES.STIMULUS);
+        }
+      }
+
+      function handleInput() {
+        switch (currentState) {
+          case STATES.IDLE:
+            updateState(STATES.WAITING);
+            break;
+
+          case STATES.WAITING:
+            updateState(STATES.FAIL);
+            break;
+
+          case STATES.STIMULUS:
+            const endTime = performance.now();
+            const reactionTime = Math.floor(endTime - startTime);
+
+            uiResult.innerHTML = `${reactionTime} <span>ms</span>`;
+            uiResult.style.display = "block";
+
+            updateState(STATES.RESULT);
+            break;
+
+          case STATES.RESULT:
+          case STATES.FAIL:
+            updateState(STATES.IDLE);
+            break;
+        }
+      }
+
+      // --- EVENT LISTENERS ---
+      window.addEventListener("mousedown", handleInput);
+      window.addEventListener("keydown", (e) => {
+        if (e.code === "Space") handleInput();
+      });
+
+      window.addEventListener("resize", onWindowResize, false);
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      // --- ANIMATION LOOP ---
+      function animate() {
+        requestAnimationFrame(animate);
+
+        // Rotation Logic based on state
+        let speed = ROTATION_SPEED.IDLE;
+        if (currentState === STATES.WAITING) speed = ROTATION_SPEED.WAITING;
+        else if (currentState === STATES.RESULT) speed = ROTATION_SPEED.RESULT;
+        else if (currentState === STATES.STIMULUS)
+          speed = ROTATION_SPEED.STIMULUS;
+
+        reactor.rotation.x += speed;
+        reactor.rotation.y += speed;
+
+        // Cage rotates opposite way slowly
+        cage.rotation.x -= 0.002;
+        cage.rotation.y -= 0.002;
+
+        // Pulse effect for Waiting state
+        if (currentState === STATES.WAITING) {
+          const time = Date.now() * 0.005;
+          const scale = 1 + Math.sin(time) * 0.05;
+          reactor.scale.set(scale, scale, scale);
+        } else {
+          reactor.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      // Start
+      animate();
+    </script>
+  </body>
+</html>
